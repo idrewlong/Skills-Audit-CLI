@@ -1,0 +1,74 @@
+version: 2
+
+project_name: skill-mgr
+
+before:
+  hooks:
+    - go mod tidy
+    - go vet ./...
+
+builds:
+  - id: skill-mgr
+    main: ./cmd/skill-mgr
+    binary: skill-mgr
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "Merge pull request"
+      - "Merge branch"
+
+brews:
+  - name: skill-mgr
+    repository:
+      owner: idrewlong
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/idrewlong/skill-mgr
+    description: "Agent skill manager — list, audit, and uninstall AI coding agent skills"
+    license: MIT
+    install: |
+      bin.install "skill-mgr"
+    test: |
+      system "#{bin}/skill-mgr", "version"
+
+release:
+  github:
+    owner: idrewlong
+    name: skill-mgr
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
