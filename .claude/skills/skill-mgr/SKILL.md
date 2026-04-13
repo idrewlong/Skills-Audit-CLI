@@ -9,8 +9,8 @@ description: >
   "check skill security", "skill-mgr". Do NOT trigger for general coding help,
   skill usage questions, or requests to install new skills (use npx skills add).
 version: 1.0.0
-author: idrewlong
-repository: idrewlong/skill-mgr
+author: Andrew Long
+repository: Andrew Long/skill-mgr
 allowed-tools: Bash
 ---
 
@@ -39,17 +39,22 @@ brew install idrewlong/tap/skill-mgr
 ## Commands
 
 ### List all installed skills
+
 ```bash
 skill-mgr list
 ```
+
 Use `--audit` to include a risk score per skill, `--agent <name>` to filter by agent.
 
 ### Audit for security threats
+
 ```bash
 skill-mgr audit --verbose
 ```
+
 Use this when the user wants to know if any of their skills are malicious, suspicious,
 or have security issues. The auditor checks for:
+
 - Prompt injection / instruction override attempts
 - Credential exfiltration patterns (.ssh, .aws, .env access + network calls)
 - Curl-pipe-bash and remote code execution patterns
@@ -62,11 +67,13 @@ or have security issues. The auditor checks for:
 Add `--registry` to also fetch Gen/Socket/Snyk scores from the skills.sh registry.
 
 ### Audit a specific skill
+
 ```bash
 skill-mgr audit <skill-name> --verbose
 ```
 
 ### Remove / uninstall a skill
+
 ```bash
 # Preview first (always recommended)
 skill-mgr remove <skill-name> --dry-run
@@ -79,11 +86,13 @@ For skills installed via `npx skills add` (symlinked universally), `remove` will
 clean up all agent symlinks automatically.
 
 ### Check for updates
+
 ```bash
 skill-mgr check-updates
 ```
 
 ### Full detail on one skill
+
 ```bash
 skill-mgr info <skill-name>
 ```

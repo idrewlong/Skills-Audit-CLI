@@ -11,6 +11,7 @@ import (
 	"github.com/idrewlong/skill-mgr/internal/discovery"
 	"github.com/idrewlong/skill-mgr/internal/registry"
 	"github.com/idrewlong/skill-mgr/internal/remove"
+	"github.com/idrewlong/skill-mgr/internal/report"
 	"github.com/idrewlong/skill-mgr/internal/update"
 	"github.com/idrewlong/skill-mgr/pkg/models"
 	"github.com/idrewlong/skill-mgr/pkg/ui"
@@ -19,17 +20,17 @@ import (
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 var (
-	colorCyan   = lipgloss.Color("#00D4FF")
+	colorAccent = lipgloss.Color("#E8762A") // Claude orange
 	colorGreen  = lipgloss.Color("#00FF88")
 	colorYellow = lipgloss.Color("#FFD93D")
 	colorRed    = lipgloss.Color("#FF6B6B")
 	colorGray   = lipgloss.Color("#888888")
 	colorWhite  = lipgloss.Color("#EEEEEE")
 
-	diamondStyle = lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
-	barStyle     = lipgloss.NewStyle().Foreground(colorCyan)
+	diamondStyle = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+	barStyle     = lipgloss.NewStyle().Foreground(colorAccent)
 	badgeStyle   = lipgloss.NewStyle().
-			Background(colorCyan).
+			Background(colorAccent).
 			Foreground(lipgloss.Color("#000000")).
 			Padding(0, 1).
 			Bold(true)
@@ -41,7 +42,7 @@ var (
 
 	summaryBox = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colorCyan).
+			BorderForeground(colorAccent).
 			Padding(0, 2).
 			MarginTop(1).
 			MarginBottom(1)
@@ -50,7 +51,7 @@ var (
 // ── Logo ──────────────────────────────────────────────────────────────────────
 
 func printLogo() {
-	cyan := lipgloss.NewStyle().Foreground(colorCyan)
+	accent := lipgloss.NewStyle().Foreground(colorAccent)
 	gray := lipgloss.NewStyle().Foreground(colorGray)
 
 	logo := []string{
@@ -64,7 +65,7 @@ func printLogo() {
 
 	fmt.Println()
 	for _, line := range logo {
-		fmt.Println(cyan.Render("  " + line))
+		fmt.Println(accent.Render("  " + line))
 	}
 	fmt.Printf("  %s\n\n", gray.Render("agent skill manager  •  v"+version))
 }
@@ -72,35 +73,19 @@ func printLogo() {
 // ── Step helpers ──────────────────────────────────────────────────────────────
 
 func step(msg string) {
-	fmt.Printf("%s %s %s\n",
-		barStyle.Render("│"),
-		diamondStyle.Render("◆"),
-		msg,
-	)
+	fmt.Printf("%s %s\n", diamondStyle.Render("◆"), msg)
 }
 
 func stepDone(msg string) {
-	fmt.Printf("%s %s %s\n",
-		barStyle.Render("│"),
-		successStyle.Render("✓"),
-		msg,
-	)
+	fmt.Printf("%s %s\n", successStyle.Render("◆"), msg)
 }
 
 func stepWarn(msg string) {
-	fmt.Printf("%s %s %s\n",
-		barStyle.Render("│"),
-		warnStyle.Render("⚠"),
-		msg,
-	)
+	fmt.Printf("%s %s\n", warnStyle.Render("◆"), msg)
 }
 
 func stepError(msg string) {
-	fmt.Printf("%s %s %s\n",
-		barStyle.Render("│"),
-		errorStyle.Render("✗"),
-		msg,
-	)
+	fmt.Printf("%s %s\n", errorStyle.Render("◆"), msg)
 }
 
 func bar() {
@@ -290,6 +275,8 @@ func wizardAudit(skills []*models.Skill) {
 	printAuditSummaryLipgloss(skills)
 	bar()
 
+	wizardExport(skills)
+
 	if exitCode != 0 {
 		os.Exit(exitCode)
 	}
@@ -409,6 +396,7 @@ func wizardRemove(skills []*models.Skill) {
 // ── Updates wizard ────────────────────────────────────────────────────────────
 
 func wizardUpdates(skills []*models.Skill) {
+	// ── Scope selection ───────────────────────────────────────────────────────
 	var scope string
 	scopeForm := huh.NewForm(
 		huh.NewGroup(
@@ -452,12 +440,13 @@ func wizardUpdates(skills []*models.Skill) {
 		}
 	}
 
+	// ── Check phase ───────────────────────────────────────────────────────────
 	step(fmt.Sprintf("Checking %s for updates...", valueStyle.Render(fmt.Sprintf("%d skill(s)", len(skills)))))
 	fmt.Println()
 
 	results := update.CheckAll(skills)
-	updatesAvailable := 0
 
+	var outdated []*models.Skill
 	for _, r := range results {
 		if r.Err != nil {
 			fmt.Printf("  %s %-24s %s\n",
@@ -473,7 +462,7 @@ func wizardUpdates(skills []*models.Skill) {
 				valueStyle.Render(r.Skill.Name),
 				warnStyle.Render("update available  "+r.UpstreamSHA),
 			)
-			updatesAvailable++
+			outdated = append(outdated, r.Skill)
 		} else {
 			fmt.Printf("  %s %-24s %s\n",
 				successStyle.Render("✓"),
@@ -484,10 +473,115 @@ func wizardUpdates(skills []*models.Skill) {
 	}
 
 	fmt.Println()
-	if updatesAvailable > 0 {
-		stepWarn(fmt.Sprintf("%d update(s) available — run: %s", updatesAvailable, valueStyle.Render("npx skills update")))
-	} else {
+
+	if len(outdated) == 0 {
 		stepDone("All skills are up to date")
+		bar()
+		return
+	}
+
+	stepWarn(fmt.Sprintf("%d update(s) available", len(outdated)))
+	bar()
+
+	// ── Apply phase ───────────────────────────────────────────────────────────
+	var applyChoice string
+	applyForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Apply updates?").
+				Description("git pull will be run in each skill's repository.").
+				Options(
+					huh.NewOption(fmt.Sprintf("Update all %d skill(s) with updates", len(outdated)), "all"),
+					huh.NewOption("Pick which skills to update", "pick"),
+					huh.NewOption("Skip — I'll update later", "skip"),
+				).
+				Value(&applyChoice),
+		),
+	).WithTheme(wizardTheme()).WithKeyMap(wizardKeyMap())
+
+	if err := applyForm.Run(); err != nil || applyChoice == "skip" {
+		fmt.Println(labelStyle.Render("\n  Skipped — no changes made."))
+		bar()
+		return
+	}
+	bar()
+
+	toUpdate := outdated
+	if applyChoice == "pick" {
+		opts := make([]huh.Option[string], len(outdated))
+		for i, s := range outdated {
+			sha := s.UpstreamSHA
+			if sha != "" {
+				sha = "  → " + sha
+			}
+			opts[i] = huh.NewOption(s.Name+labelStyle.Render(sha), s.Name)
+		}
+
+		var picks []string
+		pickForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewMultiSelect[string]().
+					Title("Select skills to update").
+					Description("Space to toggle, Enter to confirm.").
+					Options(opts...).
+					Value(&picks),
+			),
+		).WithTheme(wizardTheme()).WithKeyMap(wizardKeyMap())
+
+		if err := pickForm.Run(); err != nil || len(picks) == 0 {
+			fmt.Println(labelStyle.Render("\n  Nothing selected — no changes made."))
+			bar()
+			return
+		}
+		bar()
+
+		pickSet := map[string]bool{}
+		for _, p := range picks {
+			pickSet[p] = true
+		}
+		toUpdate = nil
+		for _, s := range outdated {
+			if pickSet[s.Name] {
+				toUpdate = append(toUpdate, s)
+			}
+		}
+	}
+
+	step(fmt.Sprintf("Applying %s...", valueStyle.Render(fmt.Sprintf("%d update(s)", len(toUpdate)))))
+	fmt.Println()
+
+	applyResults := update.ApplyAll(toUpdate)
+	errCount := 0
+	for _, r := range applyResults {
+		if r.Err != nil {
+			fmt.Printf("  %s %-24s %s\n",
+				errorStyle.Render("✗"),
+				r.Skill.Name,
+				errorStyle.Render(r.Err.Error()),
+			)
+			errCount++
+			continue
+		}
+		if r.Updated {
+			fmt.Printf("  %s %-24s %s\n",
+				successStyle.Render("✓"),
+				valueStyle.Render(r.Skill.Name),
+				successStyle.Render("updated"),
+			)
+		} else {
+			fmt.Printf("  %s %-24s %s\n",
+				labelStyle.Render("—"),
+				r.Skill.Name,
+				labelStyle.Render("already up to date"),
+			)
+		}
+	}
+
+	fmt.Println()
+	if errCount > 0 {
+		stepError(fmt.Sprintf("%d update(s) failed", errCount))
+	} else {
+		stepDone(fmt.Sprintf("%d skill(s) updated successfully", len(toUpdate)))
 	}
 	bar()
 }
@@ -536,11 +630,11 @@ func wizardInfo(skills []*models.Skill) {
 
 func wizardTheme() *huh.Theme {
 	t := huh.ThemeDracula()
-	t.Focused.Base = t.Focused.Base.BorderForeground(colorCyan)
-	t.Focused.Title = lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
-	t.Focused.SelectedOption = lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
+	t.Focused.Base = t.Focused.Base.BorderForeground(colorAccent)
+	t.Focused.Title = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+	t.Focused.SelectedOption = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	t.Focused.UnselectedOption = lipgloss.NewStyle().Foreground(colorWhite)
-	t.Focused.SelectSelector = lipgloss.NewStyle().Foreground(colorCyan).SetString("▸ ")
+	t.Focused.SelectSelector = lipgloss.NewStyle().Foreground(colorAccent).SetString("▸ ")
 	t.Focused.Description = lipgloss.NewStyle().Foreground(colorGray)
 	return t
 }
@@ -568,7 +662,7 @@ func riskLipgloss(level models.RiskLevel) lipgloss.Style {
 	case models.RiskSafe:
 		return lipgloss.NewStyle().Foreground(colorGreen).Bold(true)
 	case models.RiskLow:
-		return lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
+		return lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	case models.RiskMedium:
 		return lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
 	case models.RiskHigh:
@@ -595,6 +689,83 @@ func riskIconStr(level models.RiskLevel) string {
 	default:
 		return "?"
 	}
+}
+
+func wizardExport(skills []*models.Skill) {
+	var wantExport bool
+	huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Export audit results?").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&wantExport),
+		),
+	).WithTheme(wizardTheme()).WithKeyMap(wizardKeyMap()).Run()
+
+	if !wantExport {
+		bar()
+		return
+	}
+
+	var format string
+	huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Export format").
+				Options(
+					huh.NewOption("CSV  (.csv)", "csv"),
+					huh.NewOption("Markdown  (.md)", "markdown"),
+					huh.NewOption("JSON  (.json)", "json"),
+				).
+				Value(&format),
+		),
+	).WithTheme(wizardTheme()).WithKeyMap(wizardKeyMap()).Run()
+
+	ext := format
+	if ext == "markdown" {
+		ext = "md"
+	}
+	defaultFile := "audit-results." + ext
+
+	var filename string
+	huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Output filename").
+				Placeholder(defaultFile).
+				Value(&filename),
+		),
+	).WithTheme(wizardTheme()).WithKeyMap(wizardKeyMap()).Run()
+
+	if strings.TrimSpace(filename) == "" {
+		filename = defaultFile
+	}
+
+	bar()
+	f, err := os.Create(filename)
+	if err != nil {
+		stepError(fmt.Sprintf("Could not create file: %v", err))
+		bar()
+		return
+	}
+	defer f.Close()
+
+	switch format {
+	case "csv":
+		err = report.WriteCSV(skills, f)
+	case "markdown":
+		err = report.WriteMarkdown(skills, f)
+	case "json":
+		err = report.WriteJSON(skills, f)
+	}
+
+	if err != nil {
+		stepError(fmt.Sprintf("Export failed: %v", err))
+	} else {
+		stepDone(fmt.Sprintf("Results exported to %s", valueStyle.Render(filename)))
+	}
+	bar()
 }
 
 func printAuditSummaryLipgloss(skills []*models.Skill) {

@@ -51,15 +51,38 @@ var rules = []Rule{
 		ID:          "EX-002",
 		Severity:    models.RiskHigh,
 		Description: "Accesses sensitive credential files (.ssh, .aws, .env)",
-		Pattern:     regexp.MustCompile(`(?i)(~/\.ssh|~/\.aws|~\/\.env|\/\.env|id_rsa|id_ed25519|credentials|\.netrc)`),
+		Pattern:     regexp.MustCompile(`(?i)(~/\.ssh|~/\.aws|~\/\.env|\/\.env|id_rsa|id_ed25519|\.netrc)`),
 		Score:       25,
 	},
 	{
+		// Anchored to network context to avoid firing on semver/version strings
 		ID:          "EX-003",
 		Severity:    models.RiskHigh,
-		Description: "Hardcoded IP address (possible C2 infrastructure)",
-		Pattern:     regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`),
+		Description: "Hardcoded IP address in network context (possible C2 infrastructure)",
+		Pattern:     regexp.MustCompile(`(?i)(https?://|curl\s+|wget\s+|nc\s+|netcat\s+|connect to\s+|host:\s*|server:\s*|endpoint:\s*)(\d{1,3}\.){3}\d{1,3}`),
 		Score:       15,
+	},
+	{
+		ID:          "EX-004",
+		Severity:    models.RiskHigh,
+		Description: "Accesses password manager or GPG keystore",
+		Pattern:     regexp.MustCompile(`(?i)(~/\.gnupg|~/\.config/(gnupg|pass|gopass)|security\s+find-(generic|internet)-password|keychain\s+(access|unlock)|\bpass\s+(show|get|find)\b|gpg\s+(--export|--decrypt|--armor))`),
+		Score:       25,
+	},
+	{
+		ID:          "EX-005",
+		Severity:    models.RiskHigh,
+		Description: "Accesses git credential store or GitHub CLI token",
+		Pattern:     regexp.MustCompile(`(?i)(~/\.gitconfig|~/\.git-credentials|git\s+credential\s+(fill|approve|reject)|gh\s+auth\s+token|GIT_ASKPASS|git\s+config\s+--global\s+credential)`),
+		Score:       25,
+	},
+	{
+		// Targets agent-mediated exfil: instructing the model to read a file and leak it through output
+		ID:          "EX-006",
+		Severity:    models.RiskHigh,
+		Description: "Agent-mediated file exfiltration (read and return/send file contents)",
+		Pattern:     regexp.MustCompile(`(?i)(read (and )?(return|output|print|send|paste) (the )?(contents?|file)|paste (the )?(full |entire )?(contents?|output) of|include (the )?(full |entire |raw )(contents?|file)|send (the )?(following|contents?|file) to)`),
+		Score:       25,
 	},
 
 	// Dangerous shell patterns
@@ -81,7 +104,7 @@ var rules = []Rule{
 		ID:          "SH-003",
 		Severity:    models.RiskHigh,
 		Description: "Background process or cron scheduling",
-		Pattern:     regexp.MustCompile(`(?i)(crontab|launchctl|systemctl|nohup|&$| & |disown|screen -dm|tmux new-session -d)`),
+		Pattern:     regexp.MustCompile(`(?i)(crontab|launchctl|systemctl|nohup|disown|screen -dm|tmux new-session -d|\s+&\s*$)`),
 		Score:       20,
 	},
 	{
@@ -90,6 +113,14 @@ var rules = []Rule{
 		Description: "Unsafe download of external binary",
 		Pattern:     regexp.MustCompile(`(?i)(curl|wget).{0,80}\.(sh|bash|py|rb|exe|bin)\b`),
 		Score:       15,
+	},
+	{
+		// Catches eval $(cmd), eval "$(cmd)", eval '$(cmd)' — classic dynamic RCE
+		ID:          "SH-005",
+		Severity:    models.RiskCritical,
+		Description: "eval with dynamic input (remote code execution vector)",
+		Pattern:     regexp.MustCompile(`(?i)\beval\s+["']?\$\(`),
+		Score:       40,
 	},
 
 	// Permission overreach
@@ -116,6 +147,14 @@ var rules = []Rule{
 		Pattern:     regexp.MustCompile(`(?i)(base64\s*(-d|--decode)|echo\s+[A-Za-z0-9+/]{40,}={0,2}\s*\|\s*(base64|bash|sh))`),
 		Score:       30,
 	},
+	{
+		// 6+ consecutive hex escapes or 4+ unicode escapes suggests encoded payload
+		ID:          "OB-002",
+		Severity:    models.RiskHigh,
+		Description: "Hex or unicode escape obfuscation (encoded payload)",
+		Pattern:     regexp.MustCompile(`(\\x[0-9a-fA-F]{2}){6,}|(\\u[0-9a-fA-F]{4}){4,}`),
+		Score:       30,
+	},
 
 	// Hook / auto-execution abuse
 	{
@@ -125,23 +164,41 @@ var rules = []Rule{
 		Pattern:     regexp.MustCompile(`(?i)(PreToolUse|PostToolUse|Stop|SubagentStop|PreCompact).{0,50}(hook|execute|run|bash)`),
 		Score:       10,
 	},
+	{
+		ID:          "HK-002",
+		Severity:    models.RiskMedium,
+		Description: "References other agent auto-run hooks (Cursor, Windsurf, Codex, Cline)",
+		Pattern:     regexp.MustCompile(`(?i)(\.cursorrules|windsurf[_-]?hook|codex[_-]?hook|cline[_-]?hook|autorun|auto[_-]?execute|on[_-]?(save|open|start|load)).{0,50}(run|exec|bash|sh|python|node)`),
+		Score:       10,
+	},
 
 	// Social engineering
 	{
 		ID:          "SE-001",
 		Severity:    models.RiskMedium,
 		Description: "Social engineering language (urgency, trust manipulation)",
-		Pattern:     regexp.MustCompile(`(?i)(this skill (has been|is) (verified|approved|certified) by|trust (this|the following)|you (can|should) trust|official (anthropic|openai|cursor|github))`),
+		Pattern:     regexp.MustCompile(`(?i)(this skill (has been|is) (verified|approved|certified) by|trust (this|the following)|you (can|should) trust|(i am|this is) (the )?official (anthropic|openai|cursor|github))`),
+		Score:       15,
+	},
+	{
+		ID:          "SE-002",
+		Severity:    models.RiskMedium,
+		Description: "Urgency or mandatory-action language (pressure tactics)",
+		Pattern:     regexp.MustCompile(`(?i)(you must (run|execute|install|do) this (now|immediately|first)|do not (skip|ignore) this (step|instruction|section)|required for (this skill|the skill) to (work|function|operate)|must be (run|executed) before (anything|all|every)|this (step|instruction) is (critical|required|mandatory) and must)`),
 		Score:       15,
 	},
 }
 
-// AuditSkill performs static analysis on a skill and returns an AuditResult
+// AuditSkill performs static analysis on a skill and returns an AuditResult.
+// Findings suppressed by a .skill-mgr-ignore file or inline skill-mgr:ignore
+// comments are excluded from the result.
 func AuditSkill(skill *models.Skill) (*models.AuditResult, error) {
 	result := &models.AuditResult{
 		ScannedAt: time.Now(),
 		RiskLevel: models.RiskSafe,
 	}
+
+	allowlist := loadAllowlist(skill.Path)
 
 	// Scan all text files in the skill directory
 	err := filepath.Walk(skill.Path, func(path string, info os.FileInfo, err error) error {
@@ -158,7 +215,7 @@ func AuditSkill(skill *models.Skill) (*models.AuditResult, error) {
 		if !scannable[ext] {
 			return nil
 		}
-		findings, err := scanFile(path)
+		findings, err := scanFile(path, allowlist)
 		if err != nil {
 			return nil
 		}
@@ -188,8 +245,10 @@ func AuditSkill(skill *models.Skill) (*models.AuditResult, error) {
 	return result, nil
 }
 
-// scanFile runs all rules against a single file, returning findings
-func scanFile(path string) ([]models.AuditFinding, error) {
+// scanFile runs all rules against a single file, returning findings.
+// allowlist is a set of rule IDs to suppress for the whole file;
+// individual lines can also carry inline skill-mgr:ignore directives.
+func scanFile(path string, allowlist map[string]bool) ([]models.AuditFinding, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -204,7 +263,21 @@ func scanFile(path string) ([]models.AuditFinding, error) {
 		lineNum++
 		line := scanner.Text()
 
+		suppressAll, inlineRules := inlineIgnore(line)
+
 		for _, rule := range rules {
+			// Skip if suppressed by file-level allowlist
+			if allowlist[rule.ID] {
+				continue
+			}
+			// Skip if suppressed by inline directive
+			if suppressAll {
+				continue
+			}
+			if inlineRules[rule.ID] {
+				continue
+			}
+
 			if rule.Pattern.MatchString(line) {
 				evidence := strings.TrimSpace(line)
 				if len(evidence) > 120 {

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -213,6 +214,23 @@ func PrintSkillDetail(s *models.Skill) {
 	fmt.Println()
 }
 
+// PromptString prints a prompt with an optional default and returns the user's input.
+// If the user presses enter without typing, the default is returned.
+func PromptString(prompt, defaultVal string) string {
+	if defaultVal != "" {
+		fmt.Printf("%s [%s%s%s]: ", prompt, Gray, defaultVal, Reset)
+	} else {
+		fmt.Printf("%s: ", prompt)
+	}
+	var resp string
+	fmt.Scanln(&resp)
+	resp = strings.TrimSpace(resp)
+	if resp == "" {
+		return defaultVal
+	}
+	return resp
+}
+
 // Confirm prompts the user for y/n confirmation
 func Confirm(prompt string) bool {
 	fmt.Printf("%s [y/N] ", prompt)
@@ -282,4 +300,95 @@ func PrintError(msg string) {
 // PrintWarn prints a warning message
 func PrintWarn(msg string) {
 	fmt.Printf("%s⚠ %s%s\n", Yellow, msg, Reset)
+}
+
+// riskOrdinal maps a RiskLevel to a sortable integer (higher = worse).
+func riskOrdinal(level models.RiskLevel) int {
+	switch level {
+	case models.RiskSafe:
+		return 0
+	case models.RiskLow:
+		return 1
+	case models.RiskMedium:
+		return 2
+	case models.RiskHigh:
+		return 3
+	case models.RiskCritical:
+		return 4
+	default:
+		return -1
+	}
+}
+
+// ParseRiskLevel converts a string like "medium" to a RiskLevel.
+// Returns RiskUnknown if the string is unrecognised.
+func ParseRiskLevel(s string) models.RiskLevel {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "safe":
+		return models.RiskSafe
+	case "low":
+		return models.RiskLow
+	case "medium":
+		return models.RiskMedium
+	case "high":
+		return models.RiskHigh
+	case "critical":
+		return models.RiskCritical
+	default:
+		return models.RiskUnknown
+	}
+}
+
+// MeetsThreshold reports whether actual is at or above threshold severity.
+func MeetsThreshold(actual, threshold models.RiskLevel) bool {
+	return riskOrdinal(actual) >= riskOrdinal(threshold)
+}
+
+// SortSkills sorts skills in-place by the given field.
+// Valid values: "name" (default), "date" (newest first),
+// "risk" (highest first, requires Audit populated), "update" (updates first).
+func SortSkills(skills []*models.Skill, by string) {
+	switch strings.ToLower(by) {
+	case "date":
+		sort.SliceStable(skills, func(i, j int) bool {
+			return skills[i].InstalledAt.After(skills[j].InstalledAt)
+		})
+	case "risk":
+		sort.SliceStable(skills, func(i, j int) bool {
+			oi, oj := -1, -1
+			if skills[i].Audit != nil {
+				oi = riskOrdinal(skills[i].Audit.RiskLevel)
+			}
+			if skills[j].Audit != nil {
+				oj = riskOrdinal(skills[j].Audit.RiskLevel)
+			}
+			return oi > oj
+		})
+	case "update":
+		sort.SliceStable(skills, func(i, j int) bool {
+			if skills[i].HasUpdate != skills[j].HasUpdate {
+				return skills[i].HasUpdate
+			}
+			return strings.ToLower(skills[i].Name) < strings.ToLower(skills[j].Name)
+		})
+	default: // "name"
+		sort.SliceStable(skills, func(i, j int) bool {
+			return strings.ToLower(skills[i].Name) < strings.ToLower(skills[j].Name)
+		})
+	}
+}
+
+// FilterByRisk returns only skills whose audit risk level meets minLevel.
+// Skills that have not been audited are excluded when a level is set.
+func FilterByRisk(skills []*models.Skill, minLevel models.RiskLevel) []*models.Skill {
+	if minLevel == models.RiskUnknown || minLevel == "" {
+		return skills
+	}
+	out := skills[:0:0]
+	for _, s := range skills {
+		if s.Audit != nil && MeetsThreshold(s.Audit.RiskLevel, minLevel) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
